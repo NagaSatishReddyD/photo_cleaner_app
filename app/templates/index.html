@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Photos Cleaner — Groups (move/delete)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; padding: 18px; }
+    .controls { margin-bottom: 12px; }
+    #progressBarWrap { margin-top: 8px; max-width: 900px; }
+    #progressBar { width: 100%; background: #eee; border-radius: 6px; overflow: hidden; height: 26px; }
+    #progressFill { height: 100%; width: 0%; background: #4CAF50; color: white; text-align: center; line-height: 26px; font-weight: bold; }
+    .group { border: 1px solid #ddd; padding: 10px; margin-bottom: 16px; border-radius: 6px; }
+    .thumbs { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .thumb { width:250px; position:relative; border-radius:6px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+    .thumb img, .thumb video { width:250px; height:200px; object-fit:cover; display:block; }
+    .thumb .label { font-size:11px; padding:6px; background:#fff; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+    .best { border: 4px solid #35a854; }
+    .badge { position:absolute; top:6px; left:6px; background:#35a854; color:white; padding:3px 6px; font-size:12px; border-radius:4px; z-index:5; }
+    .btn { padding:6px 10px; border-radius:4px; border:1px solid #ccc; background:#f8f8f8; cursor:pointer; margin-left:6px; }
+    .btn.danger { background:#ff4d4f; color:white; border-color:#ff4d4f; }
+    .btn.primary { background:#1890ff; color:white; border-color:#1890ff; }
+  </style>
+</head>
+<body>
+  <h1>Photos Cleaner — Groups (move/delete)</h1>
+
+  <div class="controls">
+    <button id="startBtn" class="btn primary">Start Scan</button>
+    <button id="refreshBtn" class="btn">Refresh Groups</button>
+  </div>
+
+  <div id="progressBarWrap">
+    <div id="progressBar"><div id="progressFill">0%</div></div>
+    <div id="progressText" style="margin-top:8px;">Loaded 0 of 0 images</div>
+  </div>
+
+  <hr>
+
+  <h2>Groups (single-image groups included)</h2>
+  <div id="groupsContainer">
+    <p>Click "Start Scan" to begin scanning. Results will appear here.</p>
+  </div>
+
+  <script>
+    const startBtn = document.getElementById("startBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const progressFill = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
+    const groupsContainer = document.getElementById("groupsContainer");
+    let evtSource = null;
+
+    async function startScan() {
+      startBtn.disabled = true;
+      startBtn.textContent = "Starting...";
+      await fetch("/start_scan");
+      connectProgress();
+    }
+
+    function connectProgress() {
+      if (evtSource) evtSource.close();
+      evtSource = new EventSource("/progress");
+      evtSource.onmessage = (e) => {
+        const [processedStr, totalStr] = e.data.split("/");
+        const processed = Number(processedStr);
+        const total = Number(totalStr);
+        const percent = total === 0 ? 0 : Math.round((processed / total) * 100);
+        progressFill.style.width = percent + "%";
+        progressFill.textContent = percent + "%";
+        progressText.textContent = `Loaded ${processed} of ${total} images`;
+        if (total > 0 && processed >= total) {
+          evtSource.close();
+          evtSource = null;
+          startBtn.disabled = false;
+          startBtn.textContent = "Start Scan";
+          fetchAndRenderGroups();
+        }
+      };
+      evtSource.onerror = (err) => {
+        console.warn("SSE error", err);
+      };
+    }
+
+    async function fetchAndRenderGroups() {
+      groupsContainer.innerHTML = "<p>Loading groups...</p>";
+      const res = await fetch("/api/groups");
+      if (!res.ok) {
+        groupsContainer.innerHTML = "<p>Failed to load groups.</p>";
+        return;
+      }
+      const groups = await res.json();
+      renderGroups(groups);
+    }
+
+    function makeMediaElement(relPath, isBest) {
+      const lower = relPath.toLowerCase();
+      const url = "/extracted_photos/" + encodeURIComponent(relPath).replace(/%2F/g, "/");
+      if (lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".webm") || lower.endsWith(".avi") || lower.endsWith(".mkv")) {
+        const v = document.createElement("video");
+        v.src = url;
+        v.controls = true;
+        v.width = 150;
+        if (isBest) v.classList.add("best");
+        return v;
+      } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = relPath;
+        img.width = 150;
+        if (isBest) img.classList.add("best");
+        return img;
+      }
+    }
+
+    function renderGroups(groups) {
+      if (!groups || groups.length === 0) {
+        groupsContainer.innerHTML = "<p>No groups found.</p>";
+        return;
+      }
+      groupsContainer.innerHTML = "";
+      groups.forEach((g, idx) => {
+        const groupDiv = document.createElement("div");
+        groupDiv.className = "group";
+        groupDiv.dataset.groupIndex = idx;
+
+        const header = document.createElement("div");
+        header.style.display = "flex";
+        header.style.justifyContent = "space-between";
+        header.style.alignItems = "center";
+
+        const title = document.createElement("div");
+        title.innerHTML = `<strong>Group ${idx + 1}</strong> — ${g.files.length} item(s)`;
+        header.appendChild(title);
+
+        const controls = document.createElement("div");
+        const moveBtn = document.createElement("button");
+        moveBtn.className = "btn primary";
+        moveBtn.textContent = "✅ Move Group";
+        moveBtn.onclick = () => onMoveGroup(g.files, groupDiv);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "btn danger";
+        deleteBtn.textContent = "🗑 Delete Group";
+        deleteBtn.onclick = () => onDeleteGroup(g.files, groupDiv);
+
+        controls.appendChild(moveBtn);
+        controls.appendChild(deleteBtn);
+        header.appendChild(controls);
+
+        groupDiv.appendChild(header);
+
+        const thumbs = document.createElement("div");
+        thumbs.className = "thumbs";
+
+        g.files.forEach((rel, i) => {
+          const isBest = (i === 0);
+          const t = document.createElement("div");
+          t.className = "thumb";
+          t.dataset.path = rel;
+
+          if (isBest) {
+            const badge = document.createElement("div");
+            badge.className = "badge";
+            badge.textContent = "BEST";
+            t.appendChild(badge);
+          }
+
+          const media = makeMediaElement(rel, isBest);
+          t.appendChild(media);
+
+          const label = document.createElement("div");
+          label.className = "label";
+          label.textContent = rel;
+          t.appendChild(label);
+
+          const singleDel = document.createElement("button");
+          singleDel.className = "btn";
+          singleDel.style.position = "absolute";
+          singleDel.style.top = "6px";
+          singleDel.style.right = isBest ? "56px" : "6px";
+          singleDel.textContent = "Delete";
+          singleDel.onclick = (ev) => {
+            ev.stopPropagation();
+            onDeleteFile(rel, t, groupDiv);
+          };
+          t.appendChild(singleDel);
+
+          thumbs.appendChild(t);
+        });
+
+        groupDiv.appendChild(thumbs);
+        groupsContainer.appendChild(groupDiv);
+      });
+    }
+
+    // Actions: single confirmation, one request, update UI locally
+
+    async function onMoveGroup(files, groupDiv) {
+      if (!confirm("Move all files in this group to filtered_photos?")) return;
+      const payload = { paths: files, target: "" };
+      const res = await fetch("/api/move_group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        // remove group DOM
+        groupDiv.remove();
+      } else {
+        alert("Move failed");
+      }
+    }
+
+    async function onDeleteGroup(files, groupDiv) {
+      if (!confirm("Delete ALL files in this group permanently?")) return;
+      const payload = { paths: files };
+      const res = await fetch("/api/delete_group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        groupDiv.remove();
+      } else {
+        alert("Delete failed");
+      }
+    }
+
+    async function onDeleteFile(rel, thumbElement, groupDiv) {
+      if (!confirm("Delete this file permanently?")) return;
+      const res = await fetch("/api/delete_file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: rel })
+      });
+      if (res.ok) {
+        // remove thumb element
+        thumbElement.remove();
+        // if group empty -> remove group
+        const thumbs = groupDiv.querySelectorAll(".thumb");
+        if (thumbs.length === 0) {
+          groupDiv.remove();
+          return;
+        }
+        // if deleted was best, promote first to best visually
+        const badge = thumbElement.querySelector(".badge");
+        if (badge) {
+          // removed best; promote first remaining
+          const firstThumb = groupDiv.querySelector(".thumb");
+          if (firstThumb) {
+            const b = firstThumb.querySelector(".badge");
+            if (!b) {
+              const newBadge = document.createElement("div");
+              newBadge.className = "badge";
+              newBadge.textContent = "BEST";
+              firstThumb.insertBefore(newBadge, firstThumb.firstChild);
+            }
+            // add .best class to image/video
+            const media = firstThumb.querySelector("img,video");
+            if (media) media.classList.add("best");
+          }
+        }
+      } else {
+        alert("Delete failed");
+      }
+    }
+
+    startBtn.addEventListener("click", startScan);
+    refreshBtn.addEventListener("click", fetchAndRenderGroups);
+  </script>
+</body>
+</html>
