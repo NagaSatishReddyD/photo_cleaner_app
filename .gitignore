@@ -1,3 +1,10 @@
-/filtered_photos/*
-/optimized_photos/*
-/photos/*
+filtered_photos/*
+optimized_photos/*
+extracted_photos/*
+photos/*
+/extracted_photos/
+/optimized_photos/
+/logs/
+/temp/
+*.log
+*.tmp  
